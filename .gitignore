@@ -1,0 +1,11 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# 런타임 상태 (배포 대상 아님)
+.lock
+preexisting_hwp.txt
+*.zip
