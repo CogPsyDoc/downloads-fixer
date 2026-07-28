@@ -71,6 +71,12 @@ ok "JAVA_HOME=$JAVA_HOME"
 # 3) H2Orestart 확장 (LibreOffice 에 HWP/HWPX 읽기 필터 추가)
 # ---------------------------------------------------------------------------
 say "3/7  H2Orestart 확장 등록"
+# 갓 brew 로 설치된 LibreOffice.app 은 격리(quarantine) 속성이 붙어 있어,
+# GUI 로 한 번도 열지 않은 상태에서 unopkg 가 내부적으로 soffice.bin 을 띄우면
+# macOS Gatekeeper 가 그 프로세스를 SIGKILL(Killed: 9) 한다. 격리 속성을 제거해
+# 통과시킨다. (본인 소유 앱이라 sudo 불필요)
+xattr -dr com.apple.quarantine /Applications/LibreOffice.app 2>/dev/null || true
+
 # unopkg 는 실행 중인 LibreOffice 와 충돌한다. 인스턴스를 정리하고 남은
 # 잠금 파일(.lock)을 지운 뒤에 다뤄야 한다 — 이 잠금이 남으면 이후 모든
 # unopkg 호출이 "already running" 으로 실패한다.
@@ -79,6 +85,11 @@ clean_office_lock() {
   sleep 1
   rm -f "$HOME/Library/Application Support/LibreOffice/4/.lock"
 }
+# 첫 실행: 헤드리스로 한 번 초기화해 사용자 프로필을 만들어 두면, 이어지는
+# unopkg 의 soffice 파이프 연결이 안정적으로 동작한다.
+clean_office_lock
+"$SOFFICE" --headless --terminate_after_init >/dev/null 2>&1 || true
+clean_office_lock
 # unopkg 출력을 파이프로 바로 grep 하면 grep -q 가 파이프를 먼저 닫아
 # unopkg 가 SIGPIPE(exit 141)로 죽고, pipefail 때문에 "미등록"으로 오판한다.
 # → 출력을 변수에 먼저 담은 뒤 grep 한다.
@@ -87,7 +98,6 @@ is_h2o_registered() {
   out="$("$UNOPKG" list 2>/dev/null || true)"
   printf '%s' "$out" | grep -q "H2Orestart"
 }
-clean_office_lock
 if is_h2o_registered; then
   ok "이미 등록됨"
 else
@@ -99,7 +109,9 @@ else
   if is_h2o_registered; then
     ok "등록 완료"
   else
-    die "H2Orestart 등록 실패 — Java 설정을 확인하세요."
+    die "H2Orestart 등록 실패. LibreOffice 를 Finder 에서 한 번 실행(우클릭→열기)해
+    Gatekeeper 를 통과시킨 뒤 다시 'bash setup.sh' 를 실행하세요.
+    (그래도 안 되면 'xattr -dr com.apple.quarantine /Applications/LibreOffice.app' 후 재시도)"
   fi
 fi
 
