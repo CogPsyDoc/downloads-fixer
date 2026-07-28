@@ -38,7 +38,16 @@ if ! command -v brew >/dev/null 2>&1; then
   die "Homebrew 가 필요합니다. https://brew.sh 에서 먼저 설치한 뒤 다시 실행하세요."
 fi
 BREW_PREFIX="$(brew --prefix)"
+# Homebrew Python 을 쓴다(시스템 python3 는 macOS 개인정보 보호(TCC)상 다운로드
+# 폴더 접근이 막히는 경우가 있어, 권한을 안정적으로 부여할 수 있는 brew python 필수).
 PYTHON="$BREW_PREFIX/bin/python3"
+if [ ! -x "$PYTHON" ]; then
+  say "0/7  Homebrew Python 설치"
+  brew install python3
+  PYTHON="$BREW_PREFIX/bin/python3"
+  [ -x "$PYTHON" ] || die "Homebrew Python 설치에 실패했습니다. 'brew install python3' 를 직접 실행해 보세요."
+  ok "설치 완료: $PYTHON"
+fi
 
 # ---------------------------------------------------------------------------
 # 1) LibreOffice
