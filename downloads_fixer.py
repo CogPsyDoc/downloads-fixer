@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import re
 import subprocess
@@ -40,6 +41,9 @@ STATE_DIR = Path(__file__).resolve().parent
 LOCK_PATH = STATE_DIR / ".lock"
 # 설치(--backfill) 시점에 이미 있던 HWP 목록 — 이 파일들은 PDF 변환 대상에서 제외
 IGNORE_LIST = STATE_DIR / "preexisting_hwp.txt"
+# 이미 한 번 변환한 원본 기록 — 사용자가 PDF 를 지워도 다시 만들지 않기 위함
+# (원본이 새로 바뀌면 크기/수정시각이 달라져 다시 변환된다)
+CONVERTED_LEDGER = STATE_DIR / "converted.json"
 
 SOFFICE = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
 
@@ -178,14 +182,41 @@ def fix_names(dry_run: bool = False) -> list[Path]:
     return renamed
 
 
+def _load_ledger() -> dict:
+    """변환 이력 로드. { 파일명: [size, mtime] }."""
+    try:
+        return json.loads(CONVERTED_LEDGER.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_ledger(ledger: dict) -> None:
+    try:
+        CONVERTED_LEDGER.write_text(json.dumps(ledger, ensure_ascii=False))
+    except OSError:
+        pass
+
+
+def _identity(path: Path):
+    """원본 파일의 지문(크기, 수정시각). PDF 를 지워도 이 값은 안 변한다."""
+    st = path.stat()
+    return [st.st_size, int(st.st_mtime)]
+
+
 def convert_hwp_to_pdf(dry_run: bool = False) -> None:
-    """2단계: PDF 가 없는 .hwp/.hwpx 를 LibreOffice 로 변환."""
+    """2단계: 아직 변환한 적 없는 .hwp/.hwpx 를 LibreOffice 로 변환.
+
+    '이미 변환한 원본'은 사용자가 PDF 를 지워도 다시 만들지 않는다(이력 기록).
+    원본 자체가 새로 바뀌면(크기/수정시각 변화) 다시 변환한다.
+    """
     if not os.path.exists(SOFFICE):
         log("ERROR: LibreOffice 미설치 — PDF 변환 건너뜀")
         return
     preexisting = set()
     if IGNORE_LIST.exists():
         preexisting = set(IGNORE_LIST.read_text().splitlines())
+    ledger = _load_ledger()
+    dirty = False
     env = soffice_env()
     if "JAVA_HOME" not in env:
         log("WARN: Java 를 찾지 못함 — HWP 변환이 실패할 수 있음")
@@ -197,10 +228,28 @@ def convert_hwp_to_pdf(dry_run: bool = False) -> None:
         if path.name in preexisting:
             continue
         pdf = path.with_suffix(".pdf")
+        try:
+            ident = _identity(path)
+        except OSError:
+            continue
+        # 이미 PDF 가 있으면 변환 불필요. 다만 이력에 없거나 달라졌으면 기록해 둔다
+        # (이후 PDF 를 지워도 다시 만들지 않도록).
         if pdf.exists():
+            if ledger.get(path.name) != ident:
+                ledger[path.name] = ident
+                dirty = True
+            continue
+        # PDF 가 없다 — 하지만 같은 원본을 전에 변환한 적이 있으면(지문 동일)
+        # 사용자가 일부러 지운 것으로 보고 다시 만들지 않는다.
+        if ledger.get(path.name) == ident:
             continue
         if not is_settled(path):
             log(f"SKIP (다운로드 중): {path.name}")
+            continue
+        # 다운로드가 끝난 뒤 지문을 다시 계산(크기 확정)
+        try:
+            ident = _identity(path)
+        except OSError:
             continue
         if dry_run:
             log(f"DRY-RUN convert: {path.name} -> {pdf.name}")
@@ -215,6 +264,8 @@ def convert_hwp_to_pdf(dry_run: bool = False) -> None:
             )
             if pdf.exists():
                 log(f"CONVERT 완료: {pdf.name}")
+                ledger[path.name] = ident
+                dirty = True
             else:
                 err = (result.stderr or result.stdout or "").strip()[-300:]
                 log(f"ERROR convert {path.name}: PDF 미생성 — {err}")
@@ -222,6 +273,8 @@ def convert_hwp_to_pdf(dry_run: bool = False) -> None:
             log(f"ERROR convert {path.name}: {SOFFICE_TIMEOUT}초 타임아웃")
         except OSError as e:
             log(f"ERROR convert {path.name}: {e}")
+    if dirty:
+        _save_ledger(ledger)
 
 
 def main() -> int:
